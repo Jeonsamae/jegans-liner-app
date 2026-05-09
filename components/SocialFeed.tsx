@@ -1,25 +1,24 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
+  ActivityIndicator,
   FlatList,
   Image,
-  TextInput,
-  ActivityIndicator,
   RefreshControl,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-import AppSidebar, { AppSidebarRef } from '../../components/AppSidebar';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useAuth } from '../../contexts/AuthContext';
-import { supabase } from '../../supabase';
-import PostShareModal from '../../components/PostShareModal';
+import { router, useFocusEffect } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../supabase';
+import PostShareModal from './PostShareModal';
 
 const ORANGE = '#E05C04';
+
+type AuthorFilter = 'all' | 'admin' | 'users';
 
 type ProfileInfo = {
   full_name: string;
@@ -48,6 +47,13 @@ type Post = {
   user_liked: boolean;
   comments?: Comment[];
   showComments?: boolean;
+};
+
+type SocialFeedProps = {
+  authorFilter?: AuthorFilter;
+  showCreatePostBar?: boolean;
+  createPostRoute?: '/create-post' | '/admin-create-post';
+  emptyMessage?: string;
 };
 
 function formatDate(dateStr: string): string {
@@ -79,6 +85,7 @@ function AvatarCircle({
       />
     );
   }
+
   return (
     <View
       style={{
@@ -97,16 +104,19 @@ function AvatarCircle({
   );
 }
 
-export default function HomeScreen() {
+export default function SocialFeed({
+  authorFilter = 'all',
+  showCreatePostBar = false,
+  createPostRoute = '/create-post',
+  emptyMessage = 'No posts yet.',
+}: SocialFeedProps) {
   const { session, userProfile } = useAuth();
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [commentText, setCommentText] = useState<Record<string, string>>({});
   const [submittingComment, setSubmittingComment] = useState<Record<string, boolean>>({});
-  const [unreadCount, setUnreadCount] = useState(0);
   const [sharingPost, setSharingPost] = useState<Post | null>(null);
-  const sidebarRef = useRef<AppSidebarRef>(null);
 
   const fetchPosts = useCallback(async () => {
     if (!session?.user) return;
@@ -117,11 +127,18 @@ export default function HomeScreen() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      if (!postsData) { setPosts([]); return; }
-      const userPostsData = postsData.filter((p) => {
+
+      const filteredPosts = (postsData ?? []).filter((p) => {
         const prof = Array.isArray(p.profiles) ? p.profiles[0] : p.profiles;
-        return !prof?.is_admin;
+        if (authorFilter === 'admin') return !!prof?.is_admin;
+        if (authorFilter === 'users') return !prof?.is_admin;
+        return true;
       });
+
+      if (!filteredPosts.length) {
+        setPosts([]);
+        return;
+      }
 
       const { data: userLikes } = await supabase
         .from('likes')
@@ -129,9 +146,7 @@ export default function HomeScreen() {
         .eq('user_id', session.user.id);
 
       const likedPostIds = new Set(userLikes?.map((l) => l.post_id) ?? []);
-      const postIds = userPostsData.map((p) => p.id);
-
-      if (postIds.length === 0) { setPosts([]); return; }
+      const postIds = filteredPosts.map((p) => p.id);
 
       const [{ data: likeCounts }, { data: commentCounts }, { data: shareCounts }] =
         await Promise.all([
@@ -147,7 +162,7 @@ export default function HomeScreen() {
       commentCounts?.forEach((c) => { commentMap[c.post_id] = (commentMap[c.post_id] ?? 0) + 1; });
       shareCounts?.forEach((s) => { shareMap[s.post_id] = (shareMap[s.post_id] ?? 0) + 1; });
 
-      const enriched: Post[] = userPostsData.map((p) => {
+      const enriched: Post[] = filteredPosts.map((p) => {
         const prof = Array.isArray(p.profiles) ? p.profiles[0] : p.profiles;
         return {
           ...p,
@@ -167,7 +182,7 @@ export default function HomeScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [session]);
+  }, [authorFilter, session]);
 
   useEffect(() => { fetchPosts(); }, [fetchPosts]);
 
@@ -185,7 +200,7 @@ export default function HomeScreen() {
     };
 
     const channel = supabase
-      .channel(`home-posts-feed-${session.user.id}-${Date.now()}`)
+      .channel(`social-feed-${authorFilter}-${session.user.id}-${Date.now()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, refreshFeed)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'likes' }, refreshFeed)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, refreshFeed)
@@ -199,61 +214,12 @@ export default function HomeScreen() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [fetchPosts, session?.user]);
+  }, [authorFilter, fetchPosts, session?.user]);
 
-  const fetchUnreadCount = useCallback(async () => {
-    if (!session?.user) return;
-    try {
-      const { data: convs } = await supabase
-        .from('conversations')
-        .select('id')
-        .or(`user1_id.eq.${session.user.id},user2_id.eq.${session.user.id}`);
-      if (!convs?.length) { setUnreadCount(0); return; }
-      const convIds = convs.map((c) => c.id);
-
-      const { data: reads } = await supabase
-        .from('conversation_reads')
-        .select('conversation_id, last_read_at')
-        .eq('user_id', session.user.id)
-        .in('conversation_id', convIds);
-      const readMap: Record<string, string> = {};
-      reads?.forEach((r) => { readMap[r.conversation_id] = r.last_read_at; });
-
-      let total = 0;
-      for (const conv of convs) {
-        const lastRead = readMap[conv.id];
-        let q = supabase
-          .from('messages')
-          .select('id', { count: 'exact', head: true })
-          .eq('conversation_id', conv.id)
-          .neq('sender_id', session.user.id);
-        if (lastRead) q = q.gt('created_at', lastRead);
-        const { count } = await q;
-        total += count ?? 0;
-      }
-      setUnreadCount(total);
-    } catch { /* silent */ }
-  }, [session]);
-
-  // Recalculate badge each time the home screen comes into focus
-  useFocusEffect(useCallback(() => { fetchUnreadCount(); }, [fetchUnreadCount]));
-
-  // Real-time: increment badge when a message from someone else arrives
-  useEffect(() => {
-    if (!session?.user) return;
-    const userId = session.user.id;
-    // Use a unique channel name each time to avoid "cannot add callbacks after subscribe()" in Strict Mode
-    const channel = supabase
-      .channel(`home-unread-badge-${userId}-${Date.now()}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
-        const msg = payload.new as { sender_id: string };
-        if (msg.sender_id !== userId) setUnreadCount((prev) => prev + 1);
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [session?.user]);
-
-  const handleRefresh = () => { setRefreshing(true); fetchPosts(); };
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchPosts();
+  };
 
   const handleLike = async (postId: string, userLiked: boolean) => {
     if (!session?.user) return;
@@ -336,7 +302,14 @@ export default function HomeScreen() {
       <View style={styles.postHeader}>
         <AvatarCircle uri={post.profiles?.photo_url} name={post.profiles?.full_name} size={50} />
         <View style={{ marginLeft: 10 }}>
-          <Text style={styles.postAuthorName}>{post.profiles?.full_name ?? 'Unknown'}</Text>
+          <View style={styles.authorLine}>
+            <Text style={styles.postAuthorName}>{post.profiles?.full_name ?? 'Unknown'}</Text>
+            {post.profiles?.is_admin && (
+              <View style={styles.adminBadge}>
+                <Text style={styles.adminBadgeText}>ADMIN</Text>
+              </View>
+            )}
+          </View>
           <Text style={styles.postDate}>{formatDate(post.created_at)}</Text>
         </View>
       </View>
@@ -426,7 +399,7 @@ export default function HomeScreen() {
   const CreatePostBar = () => (
     <TouchableOpacity
       style={styles.createPostBar}
-      onPress={() => router.push('/create-post')}
+      onPress={() => router.push(createPostRoute)}
       activeOpacity={0.85}
     >
       <AvatarCircle uri={userProfile?.photo_url} name={userProfile?.full_name} size={44} />
@@ -439,78 +412,39 @@ export default function HomeScreen() {
     </TouchableOpacity>
   );
 
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={ORANGE} />
+      </View>
+    );
+  }
+
   return (
-    <SafeAreaView style={styles.safeArea}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.headerIconBtn} onPress={() => router.push('/profile')}>
-          <Ionicons name="person" size={22} color="#333" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Jegans Liner</Text>
-        <TouchableOpacity
-          style={[styles.headerIconBtn, styles.headerIconBtnDark]}
-          onPress={() => router.push('/chats')}
-        >
-          <Ionicons name="chatbubble-ellipses" size={20} color="#fff" />
-          {unreadCount > 0 && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
-            </View>
-          )}
-        </TouchableOpacity>
-      </View>
-
-      {/* Top Navigation Bar */}
-      <View style={styles.topNav}>
-        <TouchableOpacity style={[styles.navItem, styles.navItemActive]}>
-          <Ionicons name="home" size={26} color={ORANGE} />
-          <View style={styles.navActiveBar} />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/friends')}>
-          <Ionicons name="people" size={26} color="#888" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/announcements')}>
-          <Ionicons name="alert-circle" size={26} color="#888" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/bus-schedule')}>
-          <MaterialCommunityIcons name="bus" size={26} color="#888" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => sidebarRef.current?.open()}>
-          <Ionicons name="menu" size={26} color="#888" />
-        </TouchableOpacity>
-      </View>
-
-      {loading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={ORANGE} />
-        </View>
-      ) : (
-        <FlatList
-          data={posts}
-          keyExtractor={(item) => item.id}
-          renderItem={renderPost}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              colors={[ORANGE]}
-              tintColor={ORANGE}
-            />
-          }
-          ListHeaderComponent={userProfile?.is_admin ? null : <CreatePostBar />}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.feedContent}
-          ItemSeparatorComponent={() => <View style={styles.postSeparator} />}
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Ionicons name="newspaper-outline" size={52} color="#ccc" />
-              <Text style={styles.emptyText}>No posts yet.{'\n'}Be the first to post!</Text>
-            </View>
-          }
-        />
-      )}
-
-      <AppSidebar ref={sidebarRef} />
+    <>
+      <FlatList
+        data={posts}
+        keyExtractor={(item) => item.id}
+        renderItem={renderPost}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={[ORANGE]}
+            tintColor={ORANGE}
+          />
+        }
+        ListHeaderComponent={showCreatePostBar ? <CreatePostBar /> : null}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.feedContent}
+        ItemSeparatorComponent={() => <View style={styles.postSeparator} />}
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Ionicons name="newspaper-outline" size={52} color="#ccc" />
+            <Text style={styles.emptyText}>{emptyMessage}</Text>
+          </View>
+        }
+      />
       <PostShareModal
         visible={!!sharingPost}
         post={sharingPost}
@@ -519,66 +453,11 @@ export default function HomeScreen() {
           if (sharingPost) handleShared(sharingPost.id, recipientCount);
         }}
       />
-    </SafeAreaView>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#fff',
-    paddingTop: 0,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#fff',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e4e6eb',
-  },
-  headerIconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#e4e6eb',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerIconBtnDark: {
-    backgroundColor: '#444',
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: ORANGE,
-    letterSpacing: 0.2,
-  },
-  topNav: {
-    flexDirection: 'row',
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e4e6eb',
-    paddingHorizontal: 4,
-  },
-  navItem: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 10,
-    position: 'relative',
-  },
-  navItemActive: {},
-  navActiveBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 3,
-    backgroundColor: ORANGE,
-    borderRadius: 2,
-  },
   createPostBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -636,10 +515,28 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 8,
   },
+  authorLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   postAuthorName: {
     fontSize: 15,
     fontWeight: '700',
     color: '#050505',
+  },
+  adminBadge: {
+    backgroundColor: '#fff3e8',
+    borderColor: ORANGE,
+    borderWidth: 1,
+    borderRadius: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  adminBadgeText: {
+    color: ORANGE,
+    fontSize: 10,
+    fontWeight: '800',
   },
   postDate: {
     fontSize: 12,
@@ -767,24 +664,5 @@ const styles = StyleSheet.create({
     color: '#65676b',
     textAlign: 'center',
     lineHeight: 24,
-  },
-  badge: {
-    position: 'absolute',
-    top: -4,
-    right: -4,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#ff3b30',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 3,
-    borderWidth: 1.5,
-    borderColor: '#444',
-  },
-  badgeText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: '800',
   },
 });
