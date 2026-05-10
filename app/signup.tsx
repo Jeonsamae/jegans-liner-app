@@ -11,6 +11,7 @@ import {
   Alert,
   Image,
   ScrollView,
+  ImageBackground,
 } from 'react-native';
 import { Link, router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
@@ -107,7 +108,6 @@ export default function SignupScreen() {
 
     setLoading(true);
     try {
-      // 1. Create auth user
       const { data, error } = await supabase.auth.signUp({
         email: email.trim(),
         password,
@@ -126,13 +126,11 @@ export default function SignupScreen() {
       const userId = data.user.id;
       const accessToken = data.session?.access_token ?? '';
 
-      // 2. Upload profile photo to Supabase Storage
       let photoUrl: string | null = null;
       if (imageUri && accessToken) {
         photoUrl = await uploadProfileImage(userId, imageUri, accessToken);
       }
 
-      // 3. Save profile to database (upsert handles re-signup edge cases)
       const { error: profileError } = await supabase.from('profiles').upsert({
         id: userId,
         full_name: fullName.trim(),
@@ -149,7 +147,6 @@ export default function SignupScreen() {
         console.error('Profile save error:', profileError);
       }
 
-      // 4. Refresh context so landing page shows the real profile
       await refreshProfile();
 
       router.replace('/(tabs)');
@@ -161,111 +158,119 @@ export default function SignupScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    <ImageBackground
+      source={require('../background.png')}
+      style={styles.bg}
+      resizeMode="cover"
     >
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        <View style={styles.card}>
-          <Text style={styles.title}>Create Account</Text>
-          <Text style={styles.subtitle}>Sign up to get started</Text>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          <View style={styles.card}>
+            <Text style={styles.title}>Create Account</Text>
+            <Text style={styles.subtitle}>Sign up to get started</Text>
 
-          <View style={styles.avatarSection}>
-            <TouchableOpacity onPress={pickImage} style={styles.avatarWrapper}>
-              {imageUri ? (
-                <Image source={{ uri: imageUri }} style={styles.avatar} />
+            <View style={styles.avatarSection}>
+              <TouchableOpacity onPress={pickImage} style={styles.avatarWrapper}>
+                {imageUri ? (
+                  <Image source={{ uri: imageUri }} style={styles.avatar} />
+                ) : (
+                  <View style={styles.avatarPlaceholder}>
+                    <Text style={styles.avatarPlaceholderText}>+</Text>
+                    <Text style={styles.avatarPlaceholderLabel}>Photo</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+              <Text style={styles.avatarHint}>Tap to choose profile photo (optional)</Text>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Full Name</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="John Doe"
+                placeholderTextColor="#9ca3af"
+                value={fullName}
+                onChangeText={setFullName}
+                autoCapitalize="words"
+                autoComplete="name"
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Email</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="you@example.com"
+                placeholderTextColor="#9ca3af"
+                value={email}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoComplete="email"
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Password</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Min. 6 characters"
+                placeholderTextColor="#9ca3af"
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry
+                autoComplete="new-password"
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Confirm Password</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Repeat your password"
+                placeholderTextColor="#9ca3af"
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                secureTextEntry
+              />
+            </View>
+
+            <TouchableOpacity
+              style={[styles.button, loading && styles.buttonDisabled]}
+              onPress={handleSignup}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator color="#fff" />
               ) : (
-                <View style={styles.avatarPlaceholder}>
-                  <Text style={styles.avatarPlaceholderText}>+</Text>
-                  <Text style={styles.avatarPlaceholderLabel}>Photo</Text>
-                </View>
+                <Text style={styles.buttonText}>Create Account</Text>
               )}
             </TouchableOpacity>
-            <Text style={styles.avatarHint}>Tap to choose profile photo (optional)</Text>
-          </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Full Name</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="John Doe"
-              placeholderTextColor="#9ca3af"
-              value={fullName}
-              onChangeText={setFullName}
-              autoCapitalize="words"
-              autoComplete="name"
-            />
+            <View style={styles.footer}>
+              <Text style={styles.footerText}>Already have an account? </Text>
+              <Link href="/login" asChild>
+                <TouchableOpacity>
+                  <Text style={styles.link}>Sign In</Text>
+                </TouchableOpacity>
+              </Link>
+            </View>
           </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Email</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="you@example.com"
-              placeholderTextColor="#9ca3af"
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoComplete="email"
-            />
-          </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Password</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Min. 6 characters"
-              placeholderTextColor="#9ca3af"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              autoComplete="new-password"
-            />
-          </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Confirm Password</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Repeat your password"
-              placeholderTextColor="#9ca3af"
-              value={confirmPassword}
-              onChangeText={setConfirmPassword}
-              secureTextEntry
-            />
-          </View>
-
-          <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
-            onPress={handleSignup}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.buttonText}>Create Account</Text>
-            )}
-          </TouchableOpacity>
-
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>Already have an account? </Text>
-            <Link href="/login" asChild>
-              <TouchableOpacity>
-                <Text style={styles.link}>Sign In</Text>
-              </TouchableOpacity>
-            </Link>
-          </View>
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  bg: {
     flex: 1,
-    backgroundColor: '#f3f4f6',
+  },
+  flex: {
+    flex: 1,
   },
   scroll: {
     flexGrow: 1,
@@ -273,14 +278,14 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
     borderRadius: 16,
     padding: 28,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 6,
   },
   title: {
     fontSize: 26,
@@ -305,27 +310,27 @@ const styles = StyleSheet.create({
     height: 90,
     borderRadius: 45,
     borderWidth: 2,
-    borderColor: '#4f46e5',
+    borderColor: '#E05C04',
   },
   avatarPlaceholder: {
     width: 90,
     height: 90,
     borderRadius: 45,
-    backgroundColor: '#ede9fe',
+    backgroundColor: '#fff3e0',
     borderWidth: 2,
-    borderColor: '#4f46e5',
+    borderColor: '#E05C04',
     borderStyle: 'dashed',
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarPlaceholderText: {
     fontSize: 28,
-    color: '#4f46e5',
+    color: '#E05C04',
     lineHeight: 32,
   },
   avatarPlaceholderLabel: {
     fontSize: 11,
-    color: '#4f46e5',
+    color: '#E05C04',
     fontWeight: '600',
   },
   avatarHint: {
@@ -352,7 +357,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#f9fafb',
   },
   button: {
-    backgroundColor: '#4f46e5',
+    backgroundColor: '#E05C04',
     borderRadius: 10,
     paddingVertical: 14,
     alignItems: 'center',
@@ -376,7 +381,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   link: {
-    color: '#4f46e5',
+    color: '#E05C04',
     fontWeight: '600',
     fontSize: 14,
   },

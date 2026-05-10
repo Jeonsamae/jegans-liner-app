@@ -50,10 +50,13 @@ function NavigationGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (loading) return;
 
-    const inAuthGroup = segments[0] === 'login' || segments[0] === 'signup';
+    const inAuthGroup =
+      segments[0] === 'landing' ||
+      segments[0] === 'login' ||
+      segments[0] === 'signup';
 
     if (!session && !inAuthGroup) {
-      router.replace('/login');
+      router.replace('/landing');
     } else if (session && userProfile && inAuthGroup) {
       router.replace(userProfile.is_admin ? '/(tabs)/admin' : '/(tabs)');
     }
@@ -75,6 +78,7 @@ function RootLayoutInner() {
         <NotificationBootstrap />
         <Stack>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="landing" options={{ headerShown: false }} />
           <Stack.Screen name="login" options={{ headerShown: false }} />
           <Stack.Screen name="signup" options={{ headerShown: false }} />
           <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />

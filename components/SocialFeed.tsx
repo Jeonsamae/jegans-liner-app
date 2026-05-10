@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Image,
+  Modal,
   RefreshControl,
   StyleSheet,
   Text,
@@ -117,6 +119,9 @@ export default function SocialFeed({
   const [commentText, setCommentText] = useState<Record<string, string>>({});
   const [submittingComment, setSubmittingComment] = useState<Record<string, boolean>>({});
   const [sharingPost, setSharingPost] = useState<Post | null>(null);
+  const [editingPost, setEditingPost] = useState<Post | null>(null);
+  const [editingContent, setEditingContent] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const fetchPosts = useCallback(async () => {
     if (!session?.user) return;
@@ -297,11 +302,86 @@ export default function SocialFeed({
     );
   };
 
+  const openEditPost = (post: Post) => {
+    setEditingPost(post);
+    setEditingContent(post.content);
+  };
+
+  const saveEditedPost = async () => {
+    if (!session?.user || !editingPost) return;
+    const content = editingContent.trim();
+
+    if (!content && !editingPost.image_url) {
+      Alert.alert('Empty post', 'Please write something before saving.');
+      return;
+    }
+
+    setSavingEdit(true);
+    const { error } = await supabase
+      .from('posts')
+      .update({ content })
+      .eq('id', editingPost.id)
+      .eq('user_id', session.user.id);
+
+    setSavingEdit(false);
+
+    if (error) {
+      console.error('editPost error:', error);
+      Alert.alert('Update failed', 'Please try editing your post again.');
+      return;
+    }
+
+    setPosts((prev) =>
+      prev.map((post) => (post.id === editingPost.id ? { ...post, content } : post))
+    );
+    setEditingPost(null);
+    setEditingContent('');
+  };
+
+  const deletePost = async (post: Post) => {
+    if (!session?.user) return;
+
+    const deleteOwnedPost = async () => {
+      const cleanup = [
+        supabase.from('likes').delete().eq('post_id', post.id),
+        supabase.from('comments').delete().eq('post_id', post.id),
+        supabase.from('shares').delete().eq('post_id', post.id),
+      ];
+
+      const cleanupResults = await Promise.all(cleanup);
+      const cleanupError = cleanupResults.find((result) => result.error)?.error;
+      if (cleanupError) {
+        console.error('deletePost cleanup error:', cleanupError);
+        Alert.alert('Delete failed', 'Please try deleting your post again.');
+        return;
+      }
+
+      const { error } = await supabase
+        .from('posts')
+        .delete()
+        .eq('id', post.id)
+        .eq('user_id', session.user.id);
+
+      if (error) {
+        console.error('deletePost error:', error);
+        Alert.alert('Delete failed', 'Please try deleting your post again.');
+        return;
+      }
+
+      setPosts((prev) => prev.filter((item) => item.id !== post.id));
+    };
+
+    Alert.alert('Delete post?', 'This will remove your post from the feed.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: deleteOwnedPost },
+    ]);
+  };
+
   const renderPost = ({ item: post }: { item: Post }) => (
     <View style={styles.postCard}>
       <View style={styles.postHeader}>
         <AvatarCircle uri={post.profiles?.photo_url} name={post.profiles?.full_name} size={50} />
-        <View style={{ marginLeft: 10 }}>
+        <View style={styles.postAuthorBlock}>
           <View style={styles.authorLine}>
             <Text style={styles.postAuthorName}>{post.profiles?.full_name ?? 'Unknown'}</Text>
             {post.profiles?.is_admin && (
@@ -312,6 +392,16 @@ export default function SocialFeed({
           </View>
           <Text style={styles.postDate}>{formatDate(post.created_at)}</Text>
         </View>
+        {post.user_id === session?.user.id && (
+          <View style={styles.ownerActions}>
+            <TouchableOpacity style={styles.ownerActionBtn} onPress={() => openEditPost(post)}>
+              <Ionicons name="create-outline" size={19} color="#65676b" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.ownerActionBtn} onPress={() => deletePost(post)}>
+              <Ionicons name="trash-outline" size={19} color="#b91c1c" />
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       {!!post.content && <Text style={styles.postContent}>{post.content}</Text>}
@@ -453,6 +543,44 @@ export default function SocialFeed({
           if (sharingPost) handleShared(sharingPost.id, recipientCount);
         }}
       />
+      <Modal visible={!!editingPost} transparent animationType="fade" onRequestClose={() => setEditingPost(null)}>
+        <View style={styles.editModalOverlay}>
+          <View style={styles.editModalCard}>
+            <Text style={styles.editModalTitle}>Edit Post</Text>
+            <TextInput
+              style={styles.editPostInput}
+              value={editingContent}
+              onChangeText={setEditingContent}
+              placeholder="What is on your mind?"
+              placeholderTextColor="#8a8d91"
+              multiline
+              textAlignVertical="top"
+            />
+            <View style={styles.editModalActions}>
+              <TouchableOpacity
+                style={styles.editCancelBtn}
+                onPress={() => {
+                  setEditingPost(null);
+                  setEditingContent('');
+                }}
+              >
+                <Text style={styles.editCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.editSaveBtn, savingEdit && { opacity: 0.65 }]}
+                onPress={saveEditedPost}
+                disabled={savingEdit}
+              >
+                {savingEdit ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.editSaveText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -514,6 +642,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 14,
     paddingBottom: 8,
+  },
+  postAuthorBlock: {
+    flex: 1,
+    marginLeft: 10,
+  },
+  ownerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  ownerActionBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f0f2f5',
   },
   authorLine: {
     flexDirection: 'row',
@@ -664,5 +809,61 @@ const styles = StyleSheet.create({
     color: '#65676b',
     textAlign: 'center',
     lineHeight: 24,
+  },
+  editModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  editModalCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+  },
+  editModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 12,
+  },
+  editPostInput: {
+    minHeight: 130,
+    maxHeight: 220,
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 15,
+    color: '#050505',
+    lineHeight: 21,
+  },
+  editModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 12,
+  },
+  editCancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 8,
+    backgroundColor: '#e5e7eb',
+  },
+  editCancelText: {
+    color: '#333',
+    fontWeight: '800',
+  },
+  editSaveBtn: {
+    minWidth: 78,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 8,
+    backgroundColor: ORANGE,
+    alignItems: 'center',
+  },
+  editSaveText: {
+    color: '#fff',
+    fontWeight: '900',
   },
 });
