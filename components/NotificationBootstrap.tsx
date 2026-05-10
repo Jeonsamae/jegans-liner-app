@@ -26,6 +26,12 @@ async function getNotifications() {
     }),
   });
 
+  await Notifications.setNotificationChannelAsync('transport-alerts', {
+    name: 'Transport Alerts',
+    importance: Notifications.AndroidImportance.HIGH,
+    sound: 'default',
+  });
+
   return Notifications;
 }
 
@@ -51,12 +57,31 @@ export default function NotificationBootstrap() {
     if (!session?.user || IS_EXPO_GO) return;
     let isMounted = true;
 
+    const sendLocalAlert = async (
+      alertType: keyof NotificationPreferences,
+      title: string,
+      body: string,
+      route: string
+    ) => {
+      const Notifications = await getNotifications();
+      if (!Notifications || !isMounted) return;
+
+      const prefs = await getPrefs();
+      if (!prefs[alertType]) return;
+
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title,
+          body,
+          data: { route, alertType },
+        },
+        trigger: null,
+      });
+    };
+
     const channel = supabase
       .channel(`admin-update-alerts-${session.user.id}-${Date.now()}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, async (payload) => {
-        const Notifications = await getNotifications();
-        if (!Notifications || !isMounted) return;
-
         const post = payload.new as { user_id?: string; content?: string };
         if (!post.user_id || !post.content) return;
 
@@ -71,17 +96,18 @@ export default function NotificationBootstrap() {
         const alertType = getAlertType(post.content);
         if (!alertType) return;
 
-        const prefs = await getPrefs();
-        if (!prefs[alertType]) return;
+        await sendLocalAlert(alertType, 'Jegans Liner Update', post.content, '/announcements');
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bus_trip_schedules' }, async (payload) => {
+        const schedule = payload.new as { label?: string } | null;
+        const label = schedule?.label ?? 'Bus trip schedule';
 
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title: 'Jegans Liner Update',
-            body: post.content,
-            data: { route: '/announcements', alertType },
-          },
-          trigger: null,
-        });
+        await sendLocalAlert(
+          'scheduleChanges',
+          'Schedule Updated',
+          `${label} daily trips have been updated.`,
+          '/bus-schedule'
+        );
       })
       .subscribe();
 

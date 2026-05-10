@@ -19,13 +19,22 @@ import {
   NotificationPreferences,
 } from '../constants/notifications';
 import { RouteKey, SCHEDULES } from '../constants/transport';
+import { supabase } from '../supabase';
 
 const ORANGE = '#E05C04';
 const IS_EXPO_GO = Constants.appOwnership === 'expo';
 
 async function getNotifications() {
   if (IS_EXPO_GO) return null;
-  return await import('expo-notifications');
+  const Notifications = await import('expo-notifications');
+
+  await Notifications.setNotificationChannelAsync('transport-alerts', {
+    name: 'Transport Alerts',
+    importance: Notifications.AndroidImportance.HIGH,
+    sound: 'default',
+  });
+
+  return Notifications;
 }
 
 function parseToMinutes(timeStr: string) {
@@ -38,8 +47,28 @@ function parseToMinutes(timeStr: string) {
   return h * 60 + m;
 }
 
-function getNextDeparture(routeKey: RouteKey) {
-  const schedule = SCHEDULES[routeKey];
+async function getSchedule(routeKey: RouteKey) {
+  try {
+    const { data, error } = await supabase
+      .from('bus_trip_schedules')
+      .select('monday, other')
+      .eq('route_key', routeKey)
+      .single();
+
+    if (error || !data) return SCHEDULES[routeKey];
+
+    return {
+      ...SCHEDULES[routeKey],
+      monday: Array.isArray(data.monday) && data.monday.length ? data.monday : [...SCHEDULES[routeKey].monday],
+      other: Array.isArray(data.other) && data.other.length ? data.other : [...SCHEDULES[routeKey].other],
+    };
+  } catch {
+    return SCHEDULES[routeKey];
+  }
+}
+
+async function getNextDeparture(routeKey: RouteKey) {
+  const schedule = await getSchedule(routeKey);
   const now = new Date();
   const todayDow = now.getDay();
   const trips = todayDow === 1 ? schedule.monday : schedule.other;
@@ -96,7 +125,7 @@ export default function NotificationsScreen() {
       return;
     }
 
-    const departure = getNextDeparture(routeKey);
+    const departure = await getNextDeparture(routeKey);
     const triggerDate = new Date(departure.date.getTime() - 15 * 60 * 1000);
     const triggerDateValue = triggerDate.getTime() > Date.now() ? triggerDate : new Date(Date.now() + 5000);
 

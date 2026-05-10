@@ -10,38 +10,32 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
+import { SCHEDULES as DEFAULT_SCHEDULES, RouteKey } from '../constants/transport';
+import { supabase } from '../supabase';
 
 const ORANGE = '#E05C04';
 
 // ─── Schedule Data ────────────────────────────────────────────────────────────
 
-const SCHEDULES = {
-  'cebu-to-pinamungajan': {
-    label: 'CEBU TO PINAMUNGAHAN',
-    monday: [
-      '7:25 AM', '7:45 AM', '8:05 AM', '8:25 AM', '8:45 AM', '9:05 AM',
-      '2:45 PM', '3:30 PM', '4:15 PM', '5:00 PM', '5:45 PM', '6:30 PM',
-    ],
-    other: [
-      '7:45 AM', '8:30 AM', '9:15 AM', '10:00 AM', '10:45 AM', '11:30 AM',
-      '2:45 PM', '3:30 PM', '4:15 PM', '5:00 PM', '5:45 PM', '6:30 PM',
-    ],
-  },
-  'pinamungajan-to-cebu': {
-    label: 'PINAMUNGAHAN TO CEBU',
-    monday: [
-      '3:40 AM', '4:00 AM', '4:20 AM', '4:40 AM', '5:00 AM', '5:20 AM',
-      '11:25 AM', '12:00 PM', '12:45 PM', '1:30 PM', '2:15 PM', '3:00 PM',
-    ],
-    other: [
-      '4:00 AM', '4:45 AM', '5:30 AM', '6:15 AM', '7:00 AM', '7:45 AM',
-      '11:15 AM', '12:00 PM', '12:45 PM', '1:30 PM', '2:15 PM', '3:00 PM',
-    ],
-  },
-} as const;
-
-type RouteKey = keyof typeof SCHEDULES;
 type DayTab = 'monday' | 'other';
+type ScheduleMap = Record<RouteKey, {
+  label: string;
+  origin: string;
+  destination: string;
+  monday: string[];
+  other: string[];
+}>;
+
+const INITIAL_SCHEDULES = Object.fromEntries(
+  (Object.keys(DEFAULT_SCHEDULES) as RouteKey[]).map((key) => [
+    key,
+    {
+      ...DEFAULT_SCHEDULES[key],
+      monday: [...DEFAULT_SCHEDULES[key].monday],
+      other: [...DEFAULT_SCHEDULES[key].other],
+    },
+  ])
+) as ScheduleMap;
 
 // ─── Time Helpers ─────────────────────────────────────────────────────────────
 
@@ -130,13 +124,45 @@ function formatRelative(diffMs: number): string {
 export default function BusTripsScreen() {
   const { route } = useLocalSearchParams<{ route: string }>();
   const routeKey = (route as RouteKey) ?? 'cebu-to-pinamungajan';
-  const schedule = SCHEDULES[routeKey] ?? SCHEDULES['cebu-to-pinamungajan'];
+  const [schedules, setSchedules] = useState<ScheduleMap>(INITIAL_SCHEDULES);
+  const schedule = schedules[routeKey] ?? schedules['cebu-to-pinamungajan'];
 
   const todayDow = new Date().getDay();
   const [activeTab, setActiveTab] = useState<DayTab>(todayDow === 1 ? 'monday' : 'other');
 
   const [now, setNow] = useState(new Date());
   const [countdown, setCountdown] = useState({ h: 0, m: 0, s: 0 });
+
+  const fetchSchedules = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('bus_trip_schedules')
+        .select('route_key, monday, other');
+
+      if (error) throw error;
+      if (!data?.length) return;
+
+      setSchedules((prev) => {
+        const next = { ...prev };
+        data.forEach((item) => {
+          const key = item.route_key as RouteKey;
+          if (!next[key]) return;
+          next[key] = {
+            ...next[key],
+            monday: Array.isArray(item.monday) && item.monday.length ? item.monday : next[key].monday,
+            other: Array.isArray(item.other) && item.other.length ? item.other : next[key].other,
+          };
+        });
+        return next;
+      });
+    } catch (e) {
+      console.error('fetchTripSchedules error:', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSchedules();
+  }, [fetchSchedules]);
 
   // Tick every second
   useEffect(() => {

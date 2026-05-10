@@ -20,6 +20,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, SUPABASE_ANON_KEY, SUPABASE_URL } from '../supabase';
+import { SCHEDULES as DEFAULT_SCHEDULES, RouteKey } from '../constants/transport';
 
 const ORANGE = '#E05C04';
 const SIDEBAR_WIDTH = Dimensions.get('window').width * 0.75;
@@ -33,6 +34,44 @@ type FareItem = {
   toCebu: string;
   sort_order: number;
 };
+
+type ScheduleItem = {
+  routeKey: RouteKey;
+  label: string;
+  monday: string[];
+  other: string[];
+};
+
+type EditingSchedule = ScheduleItem & {
+  mondayText: string;
+  otherText: string;
+};
+
+const ROUTE_KEYS: RouteKey[] = ['cebu-to-pinamungajan', 'pinamungajan-to-cebu'];
+
+const DEFAULT_TRIP_SCHEDULES: ScheduleItem[] = ROUTE_KEYS.map((routeKey) => ({
+  routeKey,
+  label: DEFAULT_SCHEDULES[routeKey].label,
+  monday: [...DEFAULT_SCHEDULES[routeKey].monday],
+  other: [...DEFAULT_SCHEDULES[routeKey].other],
+}));
+
+const TIME_PATTERN = /^(0?[1-9]|1[0-2]):[0-5][0-9]\s?(AM|PM)$/i;
+
+function formatScheduleText(times: string[]) {
+  return times.join('\n');
+}
+
+function normalizeScheduleText(value: string) {
+  return value
+    .split(/[\n,]+/)
+    .map((time) => time.trim().replace(/\s+/g, ' ').toUpperCase())
+    .filter(Boolean);
+}
+
+function hasInvalidTimes(times: string[]) {
+  return times.some((time) => !TIME_PATTERN.test(time));
+}
 
 const DEFAULT_FARE_DATA: FareItem[] = [
   { name: 'Cebu Terminal', city: 'Cebu City', fromCebu: 'PHP 0', toCebu: 'PHP 150', sort_order: 1 },
@@ -127,6 +166,9 @@ export default function BusScheduleScreen() {
   );
   const [editingFare, setEditingFare] = useState<FareItem | null>(null);
   const [savingFare, setSavingFare] = useState(false);
+  const [tripSchedules, setTripSchedules] = useState<ScheduleItem[]>(DEFAULT_TRIP_SCHEDULES);
+  const [editingSchedule, setEditingSchedule] = useState<EditingSchedule | null>(null);
+  const [savingSchedule, setSavingSchedule] = useState(false);
 
   const fetchImages = useCallback(async () => {
     try {
@@ -186,6 +228,33 @@ export default function BusScheduleScreen() {
   useEffect(() => {
     fetchFares();
   }, [fetchFares]);
+
+  const fetchTripSchedules = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('bus_trip_schedules')
+        .select('route_key, monday, other');
+
+      if (error) throw error;
+      if (!data?.length) return;
+
+      setTripSchedules((prev) => prev.map((schedule) => {
+        const dbSchedule = data.find((item) => item.route_key === schedule.routeKey);
+        if (!dbSchedule) return schedule;
+        return {
+          ...schedule,
+          monday: Array.isArray(dbSchedule.monday) && dbSchedule.monday.length ? dbSchedule.monday : schedule.monday,
+          other: Array.isArray(dbSchedule.other) && dbSchedule.other.length ? dbSchedule.other : schedule.other,
+        };
+      }));
+    } catch (e) {
+      console.error('fetchTripSchedules error:', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTripSchedules();
+  }, [fetchTripSchedules]);
 
   const uploadBusImages = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -275,6 +344,60 @@ export default function BusScheduleScreen() {
       Alert.alert('Save failed', 'Please check that the bus_fares table and policies are ready.');
     } finally {
       setSavingFare(false);
+    }
+  };
+
+  const openScheduleEditor = (schedule: ScheduleItem) => {
+    setEditingSchedule({
+      ...schedule,
+      mondayText: formatScheduleText(schedule.monday),
+      otherText: formatScheduleText(schedule.other),
+    });
+  };
+
+  const saveTripSchedule = async () => {
+    if (!editingSchedule) return;
+
+    const monday = normalizeScheduleText(editingSchedule.mondayText);
+    const other = normalizeScheduleText(editingSchedule.otherText);
+
+    if (!monday.length || !other.length) {
+      Alert.alert('Missing trips', 'Please add at least one trip time for Monday and Tue-Sun.');
+      return;
+    }
+
+    if (hasInvalidTimes([...monday, ...other])) {
+      Alert.alert('Invalid time format', 'Use times like 7:25 AM or 3:00 PM, one per line.');
+      return;
+    }
+
+    setSavingSchedule(true);
+    try {
+      const payload = {
+        route_key: editingSchedule.routeKey,
+        label: editingSchedule.label,
+        monday,
+        other,
+      };
+
+      const { error } = await supabase
+        .from('bus_trip_schedules')
+        .upsert(payload, { onConflict: 'route_key' });
+
+      if (error) throw error;
+
+      setTripSchedules((prev) => prev.map((schedule) =>
+        schedule.routeKey === editingSchedule.routeKey
+          ? { ...schedule, monday, other }
+          : schedule
+      ));
+      setEditingSchedule(null);
+      Alert.alert('Schedule updated', `${editingSchedule.label} trips were saved.`);
+    } catch (e) {
+      console.error('saveTripSchedule error:', e);
+      Alert.alert('Save failed', 'Please check that the bus_trip_schedules table and policies are ready.');
+    } finally {
+      setSavingSchedule(false);
     }
   };
 
@@ -401,6 +524,30 @@ export default function BusScheduleScreen() {
           </View>
           <Text style={styles.routeBtnText}>PINAMUNGAHAN TO CEBU</Text>
         </TouchableOpacity>
+
+        {isAdmin && (
+          <View style={styles.adminSchedulePanel}>
+            <Text style={styles.adminScheduleTitle}>Manage Daily Trip Schedules</Text>
+            {tripSchedules.map((schedule) => (
+              <View key={schedule.routeKey} style={styles.scheduleManageCard}>
+                <View style={styles.scheduleManageInfo}>
+                  <Text style={styles.scheduleManageLabel}>{schedule.label}</Text>
+                  <Text style={styles.scheduleManageSummary}>
+                    Monday: {schedule.monday.length} trips / Tue-Sun: {schedule.other.length} trips
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.scheduleEditBtn}
+                  onPress={() => openScheduleEditor(schedule)}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="create-outline" size={16} color="#fff" />
+                  <Text style={styles.scheduleEditText}>Edit</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        )}
 
         <View style={styles.featureGrid}>
           <TouchableOpacity style={styles.featureBtn} onPress={() => router.push('/route-map')}>
@@ -575,6 +722,51 @@ export default function BusScheduleScreen() {
         </View>
       </Modal>
 
+      <Modal visible={!!editingSchedule} transparent animationType="fade" onRequestClose={() => setEditingSchedule(null)}>
+        <View style={styles.editModalOverlay}>
+          <View style={styles.editModalCard}>
+            <Text style={styles.editModalTitle}>Edit Daily Trips</Text>
+            <Text style={styles.editModalSubtitle}>{editingSchedule?.label}</Text>
+            <Text style={styles.editInputLabel}>Monday trips</Text>
+            <TextInput
+              style={[styles.editInput, styles.scheduleTextInput]}
+              placeholder="7:25 AM"
+              value={editingSchedule?.mondayText ?? ''}
+              onChangeText={(text) => setEditingSchedule((prev) => prev ? { ...prev, mondayText: text } : prev)}
+              multiline
+              textAlignVertical="top"
+              autoCapitalize="characters"
+            />
+            <Text style={styles.editInputLabel}>Tuesday to Sunday trips</Text>
+            <TextInput
+              style={[styles.editInput, styles.scheduleTextInput]}
+              placeholder="7:45 AM"
+              value={editingSchedule?.otherText ?? ''}
+              onChangeText={(text) => setEditingSchedule((prev) => prev ? { ...prev, otherText: text } : prev)}
+              multiline
+              textAlignVertical="top"
+              autoCapitalize="characters"
+            />
+            <View style={styles.editActions}>
+              <TouchableOpacity style={styles.editCancelBtn} onPress={() => setEditingSchedule(null)}>
+                <Text style={styles.editCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.editSaveBtn, savingSchedule && { opacity: 0.6 }]}
+                onPress={saveTripSchedule}
+                disabled={savingSchedule}
+              >
+                {savingSchedule ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.editSaveText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <Sidebar />
     </SafeAreaView>
   );
@@ -690,6 +882,58 @@ const styles = StyleSheet.create({
   },
   featureText: {
     color: '#333',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  adminSchedulePanel: {
+    backgroundColor: '#fff',
+    borderWidth: 1.5,
+    borderColor: '#fed7aa',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+    gap: 10,
+  },
+  adminScheduleTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#222',
+  },
+  scheduleManageCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#eee',
+    borderRadius: 10,
+    padding: 10,
+    gap: 10,
+  },
+  scheduleManageInfo: {
+    flex: 1,
+  },
+  scheduleManageLabel: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#222',
+  },
+  scheduleManageSummary: {
+    fontSize: 11,
+    color: '#777',
+    marginTop: 3,
+  },
+  scheduleEditBtn: {
+    minWidth: 76,
+    borderRadius: 8,
+    backgroundColor: ORANGE,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  scheduleEditText: {
+    color: '#fff',
     fontSize: 12,
     fontWeight: '800',
   },
@@ -849,6 +1093,19 @@ const styles = StyleSheet.create({
     color: '#111',
     marginBottom: 14,
   },
+  editModalSubtitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#777',
+    marginTop: -8,
+    marginBottom: 12,
+  },
+  editInputLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#444',
+    marginBottom: 6,
+  },
   editInput: {
     borderWidth: 1,
     borderColor: '#d1d5db',
@@ -858,6 +1115,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#111',
     marginBottom: 10,
+  },
+  scheduleTextInput: {
+    minHeight: 118,
+    maxHeight: 150,
+    lineHeight: 20,
   },
   editActions: {
     flexDirection: 'row',
