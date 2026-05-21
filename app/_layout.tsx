@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack, router, useSegments } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
@@ -10,8 +11,10 @@ import { supabase } from '../supabase';
 import NotificationBootstrap from '../components/NotificationBootstrap';
 
 export const unstable_settings = {
-  anchor: '(tabs)',
+  anchor: 'index',
 };
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 async function seedAdminAccount() {
   const { data: { session } } = await supabase.auth.getSession();
@@ -50,6 +53,8 @@ function NavigationGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (loading) return;
 
+    SplashScreen.hideAsync().catch(() => {});
+
     const inAuthGroup =
       segments[0] === 'landing' ||
       segments[0] === 'login' ||
@@ -61,6 +66,10 @@ function NavigationGuard({ children }: { children: React.ReactNode }) {
       router.replace(userProfile.is_admin ? '/(tabs)/admin' : '/(tabs)');
     }
   }, [session, userProfile, loading, segments]);
+
+  if (loading) {
+    return null;
+  }
 
   return <>{children}</>;
 }
@@ -77,6 +86,7 @@ function RootLayoutInner() {
       <NavigationGuard>
         <NotificationBootstrap />
         <Stack>
+          <Stack.Screen name="index" options={{ headerShown: false }} />
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="landing" options={{ headerShown: false }} />
           <Stack.Screen name="login" options={{ headerShown: false }} />
